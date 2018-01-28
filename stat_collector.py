@@ -1,18 +1,51 @@
 import json
 import time
 from collections import defaultdict
-current = 2405
-maxGame = 2417
+current = 2370
+maxGame = 2426
 import datetime
 import matplotlib.pyplot as plt
 MERCY_ULT_TIME = 20
 from pathlib import Path
 
+ult_timers = {
+    'doomfist':4,
+    'genji':6,
+    'mccree': 6,
+    'pharah': 3,
+    'reaper': 3,
+    'soldier':6,
+    'mercy':6,
+    'sombra':6,
+    'tracer':3,
+    'bastion':8,
+    'hanzo':5,
+    'junkrat':10,
+    'mei':5,
+    'torbjorn': 12,
+    'widowmaker': 15.5,
+    'orisa': 5,
+    'reinhardt': 3,
+    'roadhog': 6,
+    'winston': 10,
+    'zarya': 4,
+    'ana': 8,
+    'lucio': 6.25,
+    'mercy':20,
+    'moira':8
+}
+
+
 def update_mercy_lifespan(player,seconds,mercy_list):
     mercy_list[player][0] += seconds 
     mercy_list[player][1] += 1
+    #means the player died.
     if seconds < 20:
         mercy_list[player][2] += 1
+
+
+def time_converter(start, current_time):
+    return str(datetime.timedelta(seconds=(current_time-start)))
 
 def calculate_ults_in_teamfight(ult_time_dictionary,first_kill,last_kill):
     current_ults = defaultdict(list)
@@ -43,11 +76,11 @@ ults = 0
 mercy_lifespan = defaultdict(list)
 mercy_killers = defaultdict(int)
 ults_used = defaultdict(int)
-ults_gained_by_player = defaultdict(int)
 players_by_playtime = {}
-rat_ult_times = defaultdict(int)
 mercy_ult_by_advantage = defaultdict(int)
 time_to_charge_ult = defaultdict(dict)
+#comp at team fight.
+team_fight_comp = {}
 while current < maxGame:
     fights = 0
     fight_happening = False
@@ -87,16 +120,18 @@ while current < maxGame:
                     red_name = datastore[key]
                 if key == 'bluenames':
                     for index, player in enumerate(datastore[key]):
+                        if player == "Nus":
+                            player = "nus"
                         players_by_id['blue'][index+1] = player
                         if player not in players_by_playtime:
                             players_by_playtime[player] = defaultdict(int)
-                            ults_gained_by_player[player] = defaultdict(int)
                 if key == 'rednames':
                     for index, player in enumerate(datastore[key]):
+                        if player == "Nus":
+                            player = "nus"
                         players_by_id['red'][index+1] = player
                         if player not in players_by_playtime:
                             players_by_playtime[player] = defaultdict(int)
-                            ults_gained_by_player[player] = defaultdict(int)
         current_character_by_player = defaultdict(int)
         '''
             Keep track of mercies ulting. If mercy ult > 20 seconds or death,
@@ -117,6 +152,8 @@ while current < maxGame:
         for event in datastore['events']:
             time = event[0]
             standard_time = str(datetime.timedelta(seconds=(time-start)))
+            if(event[1] == 'PAUSE' or event[1] == 'UNPAUSE'):
+                continue
             if fight_happening:
                 #if fight has terminated
                 if time - last_kill > 14 or event[1] == 'END':
@@ -162,7 +199,7 @@ while current < maxGame:
             for color in mercy_ult_start:
                 if mercy_ult_start[color] > 0 and time - mercy_ult_start[color] > 20:
                     mercy_player = mercy[color]
-                    last_ult_time[player] = time
+                    last_ult_time[mercy_player] = mercy_ult_start[color] + 20
                     update_mercy_lifespan(mercy_player,20, mercy_lifespan)
                     mercy_ult_start[color] = -1000
             if event[1] == 'END':
@@ -193,6 +230,7 @@ while current < maxGame:
                     ults_used_by_color[color] += [first_character]
                     ults_used[player] += 1
                     kills_differential = kills_by_color[color] - kills_by_color[opposing_color]
+                    last_ult_time[player] = time
                     if current_character_by_player[player][1] == "mercy":
                         #print("{2} Mercy ulted at {0} with {1} advantage".format(standard_time,kills_differential,color))
                         #print(kills_by_color)
@@ -223,15 +261,15 @@ while current < maxGame:
                 elif event[1] == "REVIVE":
                     continue
                 elif event[1] == "ULT_GAIN":
-                    ults_gained_by_player[player][first_character] += 1
                     if first_character not in time_to_charge_ult[player]:
-                        time_to_charge_ult[player][first_character] = 0
+                        time_to_charge_ult[player][first_character] = []
                     initial_time, dummy = current_character_by_player[player]  
                     if player in last_ult_time:
                         initial_time = last_ult_time[player]
-                    time_to_charge_ult[player][first_character] += time - initial_time
+                    if first_character == "mercy":
+                        print ("Ult gained for {0} mercy at".format(color),time_converter(start,initial_time), time_converter(start,time))
+                    time_to_charge_ult[player][first_character].append(time - initial_time)
                     last_ult_time[player] = time
-        print(fights)
         for player in current_character_by_player:
             old_time,old_character = current_character_by_player[player]
             play_time = end - old_time
@@ -264,35 +302,50 @@ for player in mercy_lifespan:
     lifetimes, ult_times,deaths = mercy_lifespan[player]
     total_mercy_ults += ult_times
     total_mercy_deaths += deaths
-    if ult_times >= 0:
+    if ult_times > 0:
         mercy_death_graph[player] = deaths/ult_times
-    avg_ult_time = lifetimes/ult_times
-    print("{1} lives for an average of {0} seconds and died {2} times out of {3}".format(avg_ult_time,player,deaths,ult_times))
+        avg_ult_time = lifetimes/ult_times
+        print("{1} lives for an average of {0} seconds and died {2} times out of {3}".format(avg_ult_time,player,deaths,ult_times))
 
-avg_mercy_ults_per_minute = {}
-total_rat_ults = 0
-total_rat_playtime = 0
-for player,player_ults in ults_gained_by_player.items():
-    if 'mercy' in player_ults:
-        playtime = time_to_charge_ult[player]['mercy']
-        ults = player_ults['mercy'] 
-        avg_mercy_ults_per_minute[player] = playtime/ults
+avg_seconds_per_ult = defaultdict(dict)
+std_deviation_by_player = defaultdict(dict)
+for player,player_ults in time_to_charge_ult.items():
+    for character in player_ults:
+        playtime = sum(player_ults[character])
+        ults = len(player_ults[character])
+        avg = playtime/ults
+        avg_seconds_per_ult[character][player] = avg
+        summation = 0
+        if player == "nus" and character == "mercy":
+            print("ults are {0}".format(player_ults[character]))
+        for ult in player_ults[character]:
+            summation += pow(ult - avg,2)
+        std_dev = pow(summation/ults,0.5)
+        std_deviation_by_player[character][player] = std_dev/pow(avg,0.5)
 
-print("Percentage of mercies that die in ult is {0} seconds".format(total_mercy_deaths/(total_mercy_ults)))
+print("Percentage of mercies that die in ult is {0}".format(total_mercy_deaths/(total_mercy_ults)))
 
 print("Mercy win ratio when only ulting on one side is {0} out of {1}".format(mercy_ult_win_ratio[0]/(mercy_ult_win_ratio[1]),mercy_ult_win_ratio[1]))
-d = avg_mercy_ults_per_minute
-print(mercy_ult_by_advantage)
+analyzed_character = "mercy"
+d = avg_seconds_per_ult[analyzed_character]
+print(avg_seconds_per_ult[analyzed_character])
 x_axis = []
 y_axis = []
+error = []
 for w in sorted(d, key=d.get, reverse=True):
     x_axis += [w]
     y_axis += [d[w]]
-plt.bar(range(len(y_axis)), list(y_axis), align='center')
+    error += [std_deviation_by_player[analyzed_character][w]]
+
+print(x_axis)
+print(y_axis)
+print(error)
+plt.errorbar(list(range(0,len(x_axis))), y_axis,yerr=error,fmt='o')
+#plt.bar(range(len(y_axis)), list(y_axis), align='center')
 plt.xticks(range(len(x_axis)), list(x_axis))
 plt.xticks(rotation=90)
+plt.title("Seconds to generate ult as " + analyzed_character)
+plt.ylabel("seconds")
 plt.tight_layout()
-plt.title("When Mercy Ults")
-plt.ylabel("Difference")
 plt.show()
-
+quit()
