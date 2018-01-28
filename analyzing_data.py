@@ -81,16 +81,13 @@ def go_through_match(teams,events):
             color = event[2].lower()
             if event_type == 'SWITCH':
                 second_character = event[5]
-                print (teams[color]['characters'],color)
                 if teams[color]['characters'][player_position] != None:
                     update_playtime(teams, color, player_position, time)
                 teams[color]['characters'][player_position] = (second_character,time)
-    print(teams['red']['characters'])
     for color in teams:
         for player_position in range(0,6):  
             update_playtime(teams,color, player_position, end)
         print(teams[color]['playtime'],teams[color]['team_name'])
-    print(end - start)
 
                     
 
