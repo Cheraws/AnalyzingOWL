@@ -6,15 +6,16 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from enum import Enum
 import re
-from Player import Player
+from Player import Player,UltimateData
 import csv
 import datetime
 import pandas
 
 Character = collections.namedtuple('character', 'player time')
 Kill = collections.namedtuple('kill', 'killer_character killer_player killed_character killed_player color opposite_color time count')
-Ult = collections.namedtuple('ult', 'time character user color count')
+Ult = collections.namedtuple('ult', 'time character user color count hold_time')
 Teamfight = collections.namedtuple('teamfight', 'kills ults')
+TeamComp = collections.namedtuple('teamcomp', 'character_list start end')
 ult_durations = {
     "genji": (1,6),
     "zenyatta": (0,6),
@@ -38,6 +39,7 @@ class TeamElements(Enum):
     PLAYERS = 2
     CHARACTERS = 3
     PLAYTIME = 4
+    TEAM_COMPS = 5
 
 class GameInfo(Enum):
     TIME = 0
@@ -47,7 +49,7 @@ class GameInfo(Enum):
     MAP = 4
     PHASES = 5
     MATCH_NUMBER = 6
-    MAP_NUMBER = 7
+    GAME_NUMBER = 7
     ROUND_NUMBER = 8
 
 class AttackPhase(Enum):
@@ -115,6 +117,7 @@ def initialize_data(datastore,player_info):
             players += [(player_name, player_id)]
         game_info[color][TeamElements.PLAYERS] = players
         game_info[color][TeamElements.CHARACTERS] = [None] * 6
+        game_info[color][TeamElements.TEAM_COMPS] = []
         game_info[color][TeamElements.PLAYTIME] = collections.defaultdict(int)
     initialize_players(game_info,player_info)
     game_info[GameInfo.ULTS] = []
@@ -122,6 +125,7 @@ def initialize_data(datastore,player_info):
 
 
 def update_playtime(game_info, color, player_id, current_time,player_info):
+    comps = game_info[color][TeamElements.TEAM_COMPS]
     old_character, old_time = game_info[color][TeamElements.CHARACTERS][player_id]
     player_id = game_info[color][TeamElements.PLAYERS][player_id][1]
     player_info[player_id].update_playtime(current_time - old_time,old_character)
@@ -159,14 +163,15 @@ def go_through_match(game_info, events):
     teamfight_now = False
     last_kill = 0
     pause_time = 0
-    count = 0
+    count = -1
     ult_number = 0
+    ults_gained = dict()
     for event in events:
         time = event[0] - start
         event_type = event[1]
         count += 1
         if teamfight_now:
-            if time - last_kill > 13:
+            if time - last_kill > 14:
                 teamfight_now = False
                 teamfight = Teamfight(kills,ults)
                 teamfights.append(teamfight)
@@ -184,6 +189,7 @@ def go_through_match(game_info, events):
             player_position = int(event[3]) - 1
             color = TeamColor(event[2].lower())
             first_character = event[4]
+            ult_user = game_info[color][TeamElements.PLAYERS][player_position]
             if event_type == 'SWITCH':
                 second_character = event[5]
                 if game_info[color][TeamElements.CHARACTERS][player_position] is not None:
@@ -196,10 +202,18 @@ def go_through_match(game_info, events):
                 kill = kill_action(event,game_info,time,count)
                 kills.append(kill)
             elif event[1] == "ULT_USE":
-                ult_user = game_info[color][TeamElements.PLAYERS][player_position]
-                ult = Ult(time,first_character,ult_user, color,count)
+                ult = Ult(time,first_character,ult_user, color,count,"")
+                if ult_user in ults_gained:
+                    if ults_gained[ult_user] != None:
+                        charged_character, old_time = ults_gained[ult_user]
+                        if charged_character == first_character:
+                            hold_time = time - old_time
+                            ult = Ult(time,first_character,ult_user, color,count,hold_time)
+                        ults_gained[ult_user] = None
                 ults.append(ult)
                 ult_number += 1
+            elif event[1] == "ULT_GAIN":
+                ults_gained[ult_user] = (first_character,time)
     #update times when game actually changes
     for color in TeamColor:
         for player_position in range(0, 6):
@@ -214,6 +228,28 @@ def go_through_match(game_info, events):
     return game_info
 
 
+'''
+Pinpoint the exact place where the glitch happens to be reported.
+'''
+def get_map_info(game_info,time,events):
+    game_number = game_info[GameInfo.GAME_NUMBER] 
+    round_number = game_info[GameInfo.ROUND_NUMBER] 
+    match_number = game_info[GameInfo.MATCH_NUMBER] 
+    start = events[0][0]
+    for ult in game_info[GameInfo.ULTS]:
+        print(events[ult.count])
+        print(events[ult.hold_time])
+        print(events[ult.hold_time][0] - start)
+    print("error occured at game {0} round {1} match {2} at {3}".format(
+        game_number,round_number,match_number,time
+        ))
+   
+
+'''
+Record playtime on eachmap. First check map name then phase. Control
+maps are split by stage, while other types are split by attack and
+defense.
+'''
 def get_player_percentages_by_maps(game_stats):
     for game in game_stats:
         print(game)
@@ -309,14 +345,6 @@ def plot_kill_death_by_character(players,own_character, opposing_character):
     plt.tight_layout()
     plt.show()
 
-            
-'''
-Gather what an ult accomplishes within the duration of a teamfight. 
-The categories are Kills, kill plus/minus, lifespan, and opposing ults used.
-'''
-def create_ult_csv(character, d):
-    return None
-
 
 '''
 Plot the graph for team comps or usage percentage
@@ -340,7 +368,7 @@ def plot_play_percentage(d, map_name, category):
     plt.show()
 
 def create_playtime_csv(player_info):
-    csv_categories = ["player_name","team", "hero", "time_played"]
+    csv_categories = ["player_name","team", "character", "time_played"]
     myData = [csv_categories]
     for player_id, player in player_info.items():
         (player.playtime,player.player_name)
@@ -369,8 +397,10 @@ def add_miscellaneous(gameInfo, json_file,game_number,round_number,match_number)
         game_number)][round_number - 1]
     gameInfo[GameInfo.MAP] = map_name
     gameInfo[GameInfo.PHASES] = phase
+
+    gameInfo[GameInfo.GAME_NUMBER] = game_number
     gameInfo[GameInfo.ROUND_NUMBER] = round_number
-    gameInfo[GameInfo.ROUND_NUMBER] = match_number
+    gameInfo[GameInfo.MATCH_NUMBER] = match_number
 
 
 '''
@@ -378,16 +408,18 @@ Gather info about who won teamfights, etc.
 
 '''
 def teamfight_analysis(game):
-    ult_stats = collections.defaultdict(list)
+    overall_ult_stats = collections.defaultdict(list)
+    multi_ults = 0
     for game in games:
         prev_ults = []
         ults = game[GameInfo.ULTS]
         ult_count = 0
-        ults_by_color = {key: dict() for key in TeamColor}
         for teamfight in game[GameInfo.TEAMFIGHTS]:
+            ult_stats = collections.defaultdict(list)
+            ults_by_color = {key: dict() for key in TeamColor}
             current_ults = {}
             ults_in_fight = 0
-            kills_by_color = collections.defaultdict(int)
+            kills_by_color = {key: 0 for key in TeamColor}
             kills = teamfight.kills
             first_kill = kills[0]
             time = first_kill.time
@@ -414,46 +446,144 @@ def teamfight_analysis(game):
                     color = ult.color
                     time = ult.time
                     character = ult.character
+                    check_if_ult_finished(kills_by_color,current_ults,ult_stats,time,ults_by_color)
                     opposite_color = TeamColor.return_opposite_color(color)
-                    plus_minus = generate_plus_minus(color,kills_by_color)
-                    check_if_ult_finished(kills_by_color,current_ults,ult_stats,time)
                     ults_in_fight += 1
                     ults_by_color[color][character] = ult.user
-                    if ult.character == "genji":
-                        current_ults[ult.user] = [0,0,plus_minus,time,color]
+                    ultimate_data = UltimateData(ult.user,
+                            color,
+                            character,
+                            kills_by_color,
+                            time,
+                            game[GameInfo.GAME_NUMBER],
+                            game[GameInfo.ROUND_NUMBER],
+                            game[GameInfo.MATCH_NUMBER])
+                    ultimate_data.ult_held = ult.hold_time
+                    if ult.character in UltimateData.ult_times:
+                        current_ults[ult.user] = ultimate_data
+                        if ult.character == "zenyatta" :
+                            if "genji" in  ults_by_color[opposite_color]:
+                                genji_player = ults_by_color[opposite_color]["genji"]
+                                current_ults[genji_player].other_ults.add(ult.character)                    
+                        if ult.character == "genji":
+                            for hero in ults_by_color[opposite_color]:
+                                if hero == "zenyatta":
+                                    #print("genji blades at {0}".format(time))
+                                    zen = ults_by_color[opposite_color][hero]
+                                    zen = current_ults[zen]
+                                    #print("zen ults at {0}".format(zen.start_time))
+                                    if time - zen.start_time <= 1:
+                                        current_ults[ult.user].other_ults.add(hero)
                     ult_count += 1
                 else:
                     time = kill.time
-                    check_if_ult_finished(kills_by_color,current_ults,ult_stats,time)
+                    character = kill.killer_character
+                    check_if_ult_finished(kills_by_color,current_ults,ult_stats,time,ults_by_color)
                     color = kill.color
                     kills_by_color[color] += 1
                     kill_in_fight += 1
-                    #for now this means genji player died in ult
                     if kill.killed_player in current_ults:
-                        calculate_ult_stat(kill.killed_player,kills_by_color,current_ults,ult_stats,time)
+                        calculate_ult_stat(kill.killed_player,kills_by_color,current_ults,ult_stats,time,ults_by_color,killer_character = character)
                     if kill.killer_player in current_ults:
-                        current_ults[kill.killer_player][0] += 1
-            check_if_ult_finished(kills_by_color,current_ults,ult_stats,time, finished= True)
-            print(ults_by_color)
-            #print (ult_stats)
-            #print(kills_by_color)
+                        current_ults[kill.killer_player].kills += 1
+            check_if_ult_finished(kills_by_color,current_ults,ult_stats,time,ults_by_color, finished= True)
+            for player,ultimates in ult_stats.items():
+                if len(ultimates) >= 2:
+                    multi_ults += 1
+                characters = set()
+                for ultimate in ultimates:
+                    if ultimate.character not in characters:
+                        ultimate.teamfight_won = won_teamfight(kills_by_color,ultimate.color)
+                        characters.add(ultimate.character)
+                overall_ult_stats[player] += ultimates
             #print("ults in teamfight is {0}".format(ults_in_fight))
-    print(len(ult_stats))
-    create_ult_csv(ult_stats)
 
+    print(len(overall_ult_stats))
+    #print("Number of times a person ulted multiple times is {0}".format(multi_ults))
+    create_ult_csv(overall_ult_stats)
+
+'''
+
+'''
+def won_teamfight(kills_by_color, color):
+    opposite_color = TeamColor.return_opposite_color(color)
+    return int(kills_by_color[color] > kills_by_color[opposite_color])
+
+'''
+If player didn't die here, make sure to mark ult as finished after time is up.
+'''
+def check_if_ult_finished(kills_by_color,current_ults,ult_stats,time,ults_by_color,finished = False):
+    iterating_ults = dict(current_ults)
+    for player,stat in iterating_ults.items():
+        if stat.ult_over(time) or finished:
+            end_time = stat.start_time + stat.full_ult_time()
+            calculate_ult_stat(player,kills_by_color,current_ults,ult_stats,end_time,ults_by_color)
+
+def calculate_ult_stat(player,kills_by_color,current_ults,ult_stats,time,ults_by_color,killer_character = ""):
+    ultimate_data = current_ults[player]
+    old_kills_by_color = ultimate_data.kills_by_color
+    color = ultimate_data.color
+    ult_kills = ultimate_data.kills
+    old_time = ultimate_data.start_time
+    character = ultimate_data.character
+    plus_minus_difference = generate_plus_minus(color,kills_by_color) - generate_plus_minus(color,old_kills_by_color)
+    ultimate_data.elims = generate_elims(kills_by_color,old_kills_by_color,color) 
+    ultimate_data.end_time = time
+    ultimate_data.killed_by = killer_character
+    ult_stats[player].append(ultimate_data)
+    del current_ults[player]
+    del ults_by_color[color][character]
+
+'''
+Creates the csv that stores data about ults. Currently focusing on genji.
+'''
 def create_ult_csv(ult_stats):
-    csv_categories = ["player_name","kills","plus/minus"]
+    csv_categories = ["player_name",
+            "character",
+            "kills",
+            "elims",
+            "ult time", 
+            "start_time" ,
+            "zen ult",
+            "mercy ult",
+            "game_number",
+            "round_number",
+            "match_number",
+            "ult_held",
+            "killed_by",
+            "teamfight_won"
+            ]
     myData = [csv_categories]
     for player_stat, ult_stats in ult_stats.items():
         player_name = player_stat[0]
-        print(player_stat)
+        #print(player_stat)
         for ult_stat in ult_stats:
+            if ult_stat.character != "genji":
+                continue
             row = []
-            kills = ult_stat[0]
-            plus_minus = ult_stat[2]
+            kills = ult_stat.kills
+            elims = ult_stat.elims
+            ult_time = ult_stat.ult_time()
             row.append(player_name)
+            row.append(ult_stat.character)
             row.append(kills)
-            row.append(plus_minus)
+            row.append(elims)
+            row.append(ult_time)
+            row.append(ult_stat.start_time)
+            if "zenyatta" in ult_stat.other_ults:
+                row.append(True)
+            else:
+                row.append(False)
+            if "mercy" in ult_stat.other_ults:
+                row.append(True)
+            else:
+                row.append(False)
+            row.append(ult_stat.game_number)
+            row.append(ult_stat.round_number)
+            row.append(ult_stat.match_number)
+            row.append(ult_stat.ult_held)
+            row.append(ult_stat.killed_by)
+            row.append(ult_stat.teamfight_won)
             myData += [row]
     myFile = open("ults.csv","w")
     with myFile:
@@ -461,31 +591,7 @@ def create_ult_csv(ult_stats):
         writer.writerows(myData)
     myFile = open("ults.csv","r")
     df = pandas.read_csv(myFile)
-   
-
-
-def check_if_ult_finished(kills_by_color,current_ults,ult_stats,time,finished = False):
-    iterating_ults = dict(current_ults)
-    for player,stats in iterating_ults.items():
-        old_time = stats[3]
-        finish_time = time
-        if time - old_time > 7 or finished:
-            if not finished:
-                finish_time = old_time + 7
-            calculate_ult_stat(player,kills_by_color,current_ults,ult_stats,finish_time)
-
-def calculate_ult_stat(player,kills_by_color,current_ults,ult_stats,time):
-    old_plus_minus = current_ults[player][2]
-    color = current_ults[player][4]
-    ult_kills = current_ults[player][0]
-    old_time = current_ults[player][3]
-    plus_minus_difference = generate_plus_minus(color,kills_by_color) - old_plus_minus
-    current_ults[player][1] = plus_minus_difference
-    ult_stat = [ult_kills, old_plus_minus,plus_minus_difference, old_time,time]
-    ult_stats[player].append(ult_stat)
-    del current_ults[player]
-
-    
+      
 
 
 def generate_plus_minus(color,kills_by_color):
@@ -498,13 +604,13 @@ def generate_elims(current_kills_by_color,kills_by_color,color):
 
 if __name__ == "__main__":
     current_id = 2375
-    max_id = 2452
+    max_id = 2453
     attack_phases = get_attack_phases()
     games = []
     game_number = 1
     round_number = 1
     player_info = {}
-    match_number = 1
+    match_number = 0
     while current_id < max_id:
         json_file = get_json_file(current_id, game_number, round_number)
         if json_file is None:
@@ -519,15 +625,23 @@ if __name__ == "__main__":
                 match_number += 1
         phase = attack_phases[str(current_id)][str(
             game_number)][round_number - 1]
-        #print(game_number, round_number, phase)
         game_info,player_info = initialize_data(json_file,player_info)
+        if current_id == 2399 and game_number == 2:
+            if round_number != 1:
+                add_miscellaneous(game_info,json_file,game_number,round_number-1,match_number)
+            else:
+                print("round number has an issue")
+                round_number += 1
+                continue
+            round_number += 1
+        else:
+            add_miscellaneous(game_info, json_file, game_number,round_number,match_number)
         game_info = go_through_match(game_info, json_file["events"])
-        add_miscellaneous(game_info, json_file, game_number,round_number,match_number)
         games.append(game_info)
         round_number += 1
     map_playtime = {}
     teamfight_analysis(games)
     print("match number is {0}".format(match_number))
     #show_kills_deaths(game_stats)
-    #create_playtime_csv(player_info)
+    create_playtime_csv(player_info)
     #get_player_percentages_by_maps(game_stats)
